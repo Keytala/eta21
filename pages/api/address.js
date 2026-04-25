@@ -1,6 +1,7 @@
 // pages/api/address.js
-// Recupera dati indirizzo + transazioni pending da 3xpl
-// Supporta qualsiasi blockchain tra le 48 supportate
+// Recupera dati indirizzo + transazioni pending
+// Per Bitcoin usa mempool.space (più dettagliato)
+// Per altre chain usa 3xpl sandbox
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -13,55 +14,71 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing address or blockchain param' });
   }
 
+  // ── BITCOIN: usa mempool.space direttamente (più affidabile e dettagliato) ──
+  if (blockchain === 'bitcoin') {
+    try {
+      const [infoRes, mempoolRes] = await Promise.all([
+        fetch(`https://mempool.space/api/address/${address}`),
+        fetch(`https://mempool.space/api/address/${address}/txs/mempool`)
+      ]);
+
+      if (!infoRes.ok) throw new Error('Bitcoin address not found');
+
+      const info    = await infoRes.json();
+      const mempool = mempoolRes.ok ? await mempoolRes.json() : [];
+
+      res.setHeader('Cache-Control', 's-maxage=15, stale-while-revalidate=30');
+      return res.status(200).json({
+        address:    info,
+        mempool,
+        blockchain: 'bitcoin',
+        source:     'mempool.space'
+      });
+    } catch (e) {
+      console.error('[address/bitcoin]', e.message);
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
+  // ── ALTRE CHAIN: usa 3xpl ──
   const token = process.env.THREEXPL_API_KEY;
   const base  = token ? 'https://api.3xpl.com' : 'https://sandbox-api.3xpl.com';
-  const auth  = token ? `token=${token}` : '';
-
-  const sep = (path) => path.includes('?') ? '&' : '?';
+  const auth  = token ? `?token=${token}` : '';
 
   try {
-    // Chiamate parallele: dati indirizzo + transazioni mempool
     const [addrRes, mempoolRes] = await Promise.allSettled([
-      fetch(`${base}/${blockchain}/address/${encodeURIComponent(address)}${auth ? '?'+auth : ''}`),
-      fetch(`${base}/${blockchain}/address/${encodeURIComponent(address)}/mempool${auth ? '?'+auth : ''}`)
+      fetch(`${base}/${blockchain}/address/${encodeURIComponent(address)}${auth}`),
+      fetch(`${base}/${blockchain}/address/${encodeURIComponent(address)}/mempool${auth}`)
     ]);
 
-    // Gestione risposta indirizzo
-    let addrData = null;
-    if (addrRes.status === 'fulfilled' && addrRes.value.ok) {
-      addrData = await addrRes.value.json();
-    } else {
-      throw new Error(`Could not fetch address data for ${blockchain}`);
+    // Risposta indirizzo
+    if (addrRes.status !== 'fulfilled' || !addrRes.value.ok) {
+      const errText = addrRes.status === 'fulfilled'
+        ? await addrRes.value.text()
+        : 'Network error';
+      throw new Error(`3xpl error for ${blockchain}: ${errText.slice(0, 150)}`);
     }
 
-    // Gestione risposta mempool (opzionale — non tutte le chain la supportano)
-    let mempoolData = { data: [] };
+    const addrJson = await addrRes.value.json();
+
+    // Risposta mempool (opzionale)
+    let mempoolData = [];
     if (mempoolRes.status === 'fulfilled' && mempoolRes.value.ok) {
-      mempoolData = await mempoolRes.value.json();
-    }
-
-    // Per Bitcoin: recupera anche le tx confermate recenti da mempool.space
-    // (più dettagliate di 3xpl per il calcolo ETA)
-    let btcTxs = [];
-    if (blockchain === 'bitcoin') {
-      try {
-        const btcRes = await fetch(
-          `https://mempool.space/api/address/${address}/txs/mempool`
-        );
-        if (btcRes.ok) btcTxs = await btcRes.json();
-      } catch(e) {}
+      const mj = await mempoolRes.value.json();
+      // 3xpl restituisce { data: [...] } oppure { data: { ... } }
+      mempoolData = Array.isArray(mj.data) ? mj.data : [];
     }
 
     res.setHeader('Cache-Control', 's-maxage=15, stale-while-revalidate=30');
-    res.status(200).json({
-      address:    addrData.data   || addrData,
-      mempool:    btcTxs.length > 0 ? btcTxs : (mempoolData.data || []),
+    return res.status(200).json({
+      address:    addrJson.data || addrJson,
+      mempool:    mempoolData,
       blockchain,
-      source:     btcTxs.length > 0 ? 'mempool.space' : '3xpl'
+      source:     '3xpl'
     });
 
   } catch (e) {
-    console.error('[address]', e.message);
-    res.status(500).json({ error: e.message });
+    console.error('[address/3xpl]', e.message);
+    return res.status(500).json({ error: e.message });
   }
 }
