@@ -1,5 +1,5 @@
 // pages/api/btcaddress.js
-// Recupera le transazioni CONFERMATE di un indirizzo Bitcoin
+// Recupera info + transazioni CONFERMATE di un indirizzo Bitcoin
 // Usato per mostrare lo storico quando non ci sono tx pending
 
 export default async function handler(req, res) {
@@ -12,14 +12,18 @@ export default async function handler(req, res) {
 
   try {
     const [infoRes, chainRes] = await Promise.all([
-      fetch(`https://mempool.space/api/address/${address}`),
-      fetch(`https://mempool.space/api/address/${address}/txs/chain`)
+      fetch(`https://mempool.space/api/address/${address}`, {
+        signal: AbortSignal.timeout(8000)
+      }),
+      fetch(`https://mempool.space/api/address/${address}/txs/chain`, {
+        signal: AbortSignal.timeout(8000)
+      })
     ]);
 
     if (!infoRes.ok) throw new Error('Address not found on Bitcoin network');
 
-    const info      = await infoRes.json();
-    const chainTxs  = chainRes.ok ? await chainRes.json() : [];
+    const info     = await infoRes.json();
+    const chainTxs = chainRes.ok ? await chainRes.json() : [];
 
     res.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=60');
     res.status(200).json({ info, chainTxs });
