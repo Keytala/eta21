@@ -1,6 +1,6 @@
 // pages/api/detect.js
 // Chiama 3xpl per rilevare su quale blockchain esiste un indirizzo
-// Gestisce correttamente la struttura della risposta del sandbox
+// Normalizza tutti i formati di risposta possibili del sandbox
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -21,8 +21,7 @@ export default async function handler(req, res) {
   try {
     const r = await fetch(url, {
       headers: { 'Accept': 'application/json' },
-      // Timeout di 8 secondi
-      signal: AbortSignal.timeout(8000)
+      signal:  AbortSignal.timeout(8000)
     });
 
     if (!r.ok) {
@@ -32,25 +31,20 @@ export default async function handler(req, res) {
 
     const raw = await r.json();
 
-    // ── Normalizza la risposta ──
-    // 3xpl sandbox può rispondere in formati diversi:
-    // { data: { blockchains: ['bitcoin', ...], type: 'address' } }
-    // oppure { data: { results: [...] } }
-    // oppure { data: [...] }
-
+    // Normalizza la risposta — 3xpl sandbox può rispondere in formati diversi
     let blockchains = [];
 
     if (raw?.data?.blockchains && Array.isArray(raw.data.blockchains)) {
-      // Formato standard
+      // Formato standard: { data: { blockchains: ['bitcoin', ...] } }
       blockchains = raw.data.blockchains;
     } else if (raw?.data?.results && Array.isArray(raw.data.results)) {
-      // Formato alternativo
+      // Formato alternativo: { data: { results: [...] } }
       blockchains = raw.data.results
         .filter(r => r.type === 'address')
         .map(r => r.blockchain)
         .filter(Boolean);
     } else if (Array.isArray(raw?.data)) {
-      // Array diretto
+      // Array diretto: { data: [...] }
       blockchains = raw.data
         .filter(item => typeof item === 'string')
         .slice(0, 5);
@@ -61,17 +55,14 @@ export default async function handler(req, res) {
       data: {
         blockchains,
         type: raw?.data?.type || 'address',
-        raw: raw?.data  // incluso per debug
       }
     });
 
   } catch (e) {
     console.error('[detect]', e.message);
-
-    // Se 3xpl fallisce, restituisci errore chiaro
     return res.status(500).json({
       error: e.message,
-      hint: 'If using sandbox-api.3xpl.com, it may be rate limited. Try again in a few seconds.'
+      hint: 'sandbox-api.3xpl.com may be rate limited. Try again in a few seconds.'
     });
   }
 }
